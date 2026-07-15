@@ -13,9 +13,7 @@ import (
 )
 
 var (
-	enc, _                    = zstd.NewWriter(nil)
-	dec, _                    = zstd.NewReader(nil)
-	ErrZLibDecompressionLimit = fmt.Errorf("zlib decompression limit reached")
+	ErrDecompressionLimit = fmt.Errorf("decompression limit reached")
 )
 
 // VoteExtensionCodec is the interface for encoding / decoding vote extensions.
@@ -156,18 +154,61 @@ func (c *ZLibCompressor) Decompress(bz []byte) ([]byte, error) {
 }
 
 // ZStdCompressor is a Compressor that uses zstd to compress / decompress byte arrays, this object is thread-safe.
-type ZStdCompressor struct{}
+type ZStdCompressor struct {
+	// decompressLimit is the maximum number of bytes that can be decompressed.
+	// if <=0, no limit is applied.
+	decompressLimit int
+}
 
 func NewZStdCompressor() *ZStdCompressor {
 	return &ZStdCompressor{}
 }
 
+// NewZStdCompressorWithLimit returns a new ZStdDecompressor with the given decompression limit.
+func NewZStdCompressorWithLimit(limit int) *ZStdCompressor {
+	return &ZStdCompressor{decompressLimit: limit}
+}
+
 func (c *ZStdCompressor) Compress(bz []byte) ([]byte, error) {
-	return enc.EncodeAll(bz, nil), nil
+	var b bytes.Buffer
+
+	if len(bz) > c.decompressLimit && c.decompressLimit > 0 {
+		return nil, fmt.Errorf("zstd compression limit reached")
+	}
+
+	// we use the best compression level as size reduction is prioritized
+	w, err := zstd.NewWriter(&b)
+	if err != nil {
+		return nil, err
+	}
+	defer w.Close()
+
+	// write and flush the buffer
+	if _, err := w.Write(bz); err != nil {
+		return nil, err
+	}
+	if err := w.Close(); err != nil {
+		return nil, err
+	}
+
+	return b.Bytes(), nil
 }
 
 func (c *ZStdCompressor) Decompress(bz []byte) ([]byte, error) {
-	return dec.DecodeAll(bz, nil)
+	if len(bz) == 0 {
+		return nil, nil
+	}
+	zr, err := zstd.NewReader(bytes.NewReader(bz))
+	if err != nil {
+		return nil, err
+	}
+	defer zr.Close()
+
+	var r io.Reader = zr
+	if c.decompressLimit > 0 {
+		r = newLimitReaderWithError(r, c.decompressLimit)
+	}
+	return io.ReadAll(r)
 }
 
 // CompressionVoteExtensionCodec is a VoteExtensionCodec that uses compression to encode / decode, given a
@@ -285,7 +326,7 @@ func (lr *limitReaderWithError) Read(p []byte) (int, error) {
 		if err != nil {
 			return 0, err
 		}
-		return 0, ErrZLibDecompressionLimit
+		return 0, ErrDecompressionLimit
 	}
 	if len(p) > lr.n {
 		p = p[:lr.n]

@@ -177,6 +177,24 @@ func TestZLibCompressor_CompressDecompress_UnderLimit_NoError(t *testing.T) {
 	require.Equal(t, payload, out)
 }
 
+func TestZStdCompressor_CompressDecompress_UnderLimit_NoError(t *testing.T) {
+	origLimit := 1000
+
+	comp := compression.NewZStdCompressorWithLimit(origLimit)
+
+	// Ensure payload size is strictly below the current limit.
+	payloadLen := origLimit / 2
+
+	payload := make([]byte, payloadLen)
+	compressed, err := comp.Compress(payload)
+	require.NoError(t, err)
+
+	// Decompress should not be truncated because limit is unchanged.
+	out, err := comp.Decompress(compressed)
+	require.NoError(t, err)
+	require.Equal(t, payload, out)
+}
+
 func TestZLibCompressor_Compress_OverLimit_Error(t *testing.T) {
 	origLimit := 1000
 
@@ -188,6 +206,19 @@ func TestZLibCompressor_Compress_OverLimit_Error(t *testing.T) {
 	_, err := comp.Compress(payload)
 	require.Error(t, err)
 	require.Equal(t, "zlib compression limit reached", err.Error())
+}
+
+func TestZStdCompressor_Compress_OverLimit_Error(t *testing.T) {
+	origLimit := 1000
+
+	comp := compression.NewZStdCompressorWithLimit(origLimit)
+
+	payloadLen := origLimit + 1
+
+	payload := make([]byte, payloadLen)
+	_, err := comp.Compress(payload)
+	require.Error(t, err)
+	require.Equal(t, "zstd compression limit reached", err.Error())
 }
 
 func TestZLibCompressor_Decompress_OverLimit_Error(t *testing.T) {
@@ -208,5 +239,26 @@ func TestZLibCompressor_Decompress_OverLimit_Error(t *testing.T) {
 	// Lower the decompression limit to trigger the error/short read path.
 	_, err = dec.Decompress(compressed)
 	require.Error(t, err)
-	require.ErrorIs(t, err, compression.ErrZLibDecompressionLimit)
+	require.ErrorIs(t, err, compression.ErrDecompressionLimit)
+}
+
+func TestZStdCompressor_Decompress_OverLimit_Error(t *testing.T) {
+	// This test checks the expected behavior when the decompressed output would exceed the limit.
+	origLimit := 1000
+
+	comp := compression.NewZStdCompressorWithLimit(origLimit * 2)
+
+	payloadLen := origLimit
+
+	// Create compressed data that expands to more than decompressLimit bytes.
+	payload := make([]byte, payloadLen)
+	compressed, err := comp.Compress(payload)
+	require.NoError(t, err)
+
+	dec := compression.NewZStdCompressorWithLimit(origLimit / 2)
+
+	// Lower the decompression limit to trigger the error/short read path.
+	_, err = dec.Decompress(compressed)
+	require.Error(t, err)
+	require.ErrorIs(t, err, compression.ErrDecompressionLimit)
 }
